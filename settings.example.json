@@ -1,0 +1,22 @@
+{
+  "_comment": "Copy the hooks.UserPromptSubmit block below into your ~/.claude/settings.json (merge with existing hooks). Adjust VISION_* env vars in the env block to match your provider.",
+  "env": {
+    "VISION_PROVIDER": "openai",
+    "VISION_API_KEY": "sk-your-key-here",
+    "VISION_MODEL": "gpt-4o"
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/image-vision.py",
+            "timeout": 60,
+            "statusMessage": "解析图片中..."
+          }
+        ]
+      }
+    ]
+  }
+}
