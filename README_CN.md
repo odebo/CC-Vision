@@ -51,7 +51,7 @@ export VISION_MODEL=gpt-4o
 ### 2. 一键安装
 
 ```bash
-git clone https://github.com/zhuqichen/CC-Vision.git
+git clone https://github.com/odebo/CC-Vision.git
 cd CC-Vision
 ./install.sh
 ```
