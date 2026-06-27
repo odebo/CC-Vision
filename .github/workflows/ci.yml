@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Syntax check
+        run: python -m py_compile image-vision.py
+
+      - name: --help works
+        run: python image-vision.py --help
+
+      - name: --test-image without API key exits with code 2
+        run: |
+          set +e
+          env -u VISION_API_KEY python image-vision.py --test-image /tmp/nope.png > /dev/null 2>&1
+          code=$?
+          [ "$code" = "2" ] || { echo "expected exit 2, got $code"; exit 1; }
+
+      - name: Hook mode with no new images returns empty JSON
+        run: |
+          out=$(echo '{}' | VISION_API_KEY=fake python image-vision.py)
+          echo "$out" | grep -q '^{}$' || { echo "expected {}, got: $out"; exit 1; }

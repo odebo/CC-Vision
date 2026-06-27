@@ -20,6 +20,29 @@ flowchart LR
     F --> G[Main model answers normally]
 ```
 
+## Demo
+
+> 📹 A real terminal-recorded GIF would go here (`docs/demo.gif`). PRs welcome — see [`docs/demo.md`](docs/demo.md).
+
+**Before** (non-multimodal main model, no hook):
+
+```
+You: [pastes screenshot] what's wrong with this code?
+AI: I see you've shared an image, but I'm not able to view images directly.
+    Could you describe what's in the screenshot or paste the code as text?
+```
+
+**After** (same main model, CC-Vision installed):
+
+```
+You: [pastes screenshot] what's wrong with this code?
+[status] 解析图片中...
+AI: Looking at the screenshot, the error is on line 42 — `foo` is undefined.
+    You imported `fool` but called `foo`. Fix: change `foo()` to `fool()`.
+```
+
+The main model never sees pixels — it sees a textual description of the image injected via `additionalContext`. See [`docs/demo.md`](docs/demo.md) for details and how to contribute a real GIF.
+
 ## Features
 
 - **Non-invasive**: main model config untouched, just adds a hook
@@ -149,6 +172,24 @@ A: One image adds 1-3s of API latency. With no images, the hook returns near-ins
 
 **Q: Will the main model think the image description is user input?**
 A: Yes, and that's the mechanism — the main model sees "the user described this image". The `<image_vision>` tag marks the source clearly; main models usually handle it correctly.
+
+## Written about
+
+A 公众号 article walking through the problem and the build is in the works. Link will be added here once published.
+
+<!-- TODO: replace with the published 公众号 article URL -->
+
+## Contributing
+
+PRs welcome. Ideas:
+
+- Parallel multi-image parsing (`concurrent.futures`)
+- More provider presets (Volcengine Doubao, Baidu Qianfan, etc.)
+- Content-hash caching (skip re-parsing identical images across sessions)
+- A demo GIF ([`docs/demo.md`](docs/demo.md))
+- Tests (the script is currently verified by the [CI workflow](.github/workflows/ci.yml) via `--help` and exit-code checks; real unit tests would be even better)
+
+Please keep the script dependency-free (stdlib only) so installation stays a single `cp`.
 
 ## License
 
