@@ -16,6 +16,12 @@ this hook:
 The main model never sees the pixels — it sees a textual description of the
 image, which is enough for almost all follow-up tasks.
 
+Features:
+  - Parallel parsing: multiple images are parsed concurrently (configurable workers)
+  - Content-hash dedup: same image at different paths (or re-pasted) is never re-parsed
+  - Provider presets: VISION_PROVIDER=openai|dashscope|zhipu|siliconflow|moonshot
+  - Never blocks: any crash returns {}
+
 Configuration: environment variables (see README). No code changes needed to
 switch providers.
 
@@ -43,12 +49,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
 
@@ -68,6 +76,7 @@ API_BASE = os.environ.get(
 API_KEY = os.environ.get("VISION_API_KEY", "")
 MODEL = os.environ.get("VISION_MODEL", "gpt-4o")
 EXTRA_HEADERS_JSON = os.environ.get("VISION_EXTRA_HEADERS", "")  # JSON object string
+MAX_WORKERS = int(os.environ.get("VISION_MAX_WORKERS", "4"))  # parallel image parsing
 
 # Provider presets: set VISION_PROVIDER to one of these to fill in defaults.
 PROVIDER_PRESETS: dict[str, dict[str, str]] = {
@@ -136,7 +145,17 @@ apply_preset()
 # Processed-image tracking
 # ---------------------------------------------------------------------------
 
+def file_content_hash(path: str) -> str:
+    """SHA-256 of file content. Same image at different paths → same hash."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def load_processed() -> set[str]:
+    """Load set of content hashes that have already been parsed."""
     if not PROCESSED_FILE.exists():
         return set()
     try:
@@ -145,17 +164,19 @@ def load_processed() -> set[str]:
         return set()
 
 
-def append_processed(paths: Iterable[str]) -> None:
+def append_processed(hashes: Iterable[str]) -> None:
+    """Record content hashes as processed."""
     try:
         PROCESSED_FILE.parent.mkdir(parents=True, exist_ok=True)
         with PROCESSED_FILE.open("a", encoding="utf-8") as f:
-            for p in paths:
-                f.write(p + "\n")
+            for h in hashes:
+                f.write(h + "\n")
     except OSError:
         pass
 
 
-def find_new_images(processed: set[str]) -> list[str]:
+def find_new_images(processed_hashes: set[str]) -> list[str]:
+    """Find image files not yet processed (by content hash, not path)."""
     if not CACHE_DIR.exists():
         return []
     cutoff = time.time() - RECENT_WINDOW
@@ -169,7 +190,13 @@ def find_new_images(processed: set[str]) -> list[str]:
             if st.st_mtime < cutoff:
                 continue
             sp = str(p)
-            if sp in processed:
+            # Deduplicate by content hash — same image at different paths
+            # or re-pasted images won't be re-parsed.
+            try:
+                content_hash = file_content_hash(sp)
+            except OSError:
+                continue
+            if content_hash in processed_hashes:
                 continue
             found.append((st.st_mtime, sp))
     found.sort()
@@ -230,6 +257,16 @@ def describe_image(path: str) -> str:
 # Hook entry point
 # ---------------------------------------------------------------------------
 
+def _parse_one_image(img_path: str) -> tuple[str, str, str]:
+    """Parse a single image. Returns (content_hash, path, description)."""
+    content_hash = file_content_hash(img_path)
+    try:
+        desc = describe_image(img_path)
+    except Exception as e:
+        desc = f"[vision parse failed: {e}]"
+    return content_hash, img_path, desc
+
+
 def run_hook() -> None:
     # Consume stdin (Claude Code passes hook input JSON) — we don't use it.
     try:
@@ -238,8 +275,8 @@ def run_hook() -> None:
         pass
 
     try:
-        processed = load_processed()
-        images = find_new_images(processed)
+        processed_hashes = load_processed()
+        images = find_new_images(processed_hashes)
     except Exception:
         print(json.dumps({}))
         return
@@ -248,15 +285,43 @@ def run_hook() -> None:
         print(json.dumps({}))
         return
 
-    descriptions: list[str] = []
-    newly_done: list[str] = []
+    # Deduplicate within this invocation — same content hash → parse once
+    seen_hashes: set[str] = set()
+    unique_images: list[str] = []
     for img in images:
         try:
-            desc = describe_image(img)
-        except Exception as e:
-            desc = f"[vision parse failed: {e}]"
-        descriptions.append(f"[图片 {img}]\n{desc}")
-        newly_done.append(img)
+            h = file_content_hash(img)
+        except OSError:
+            continue
+        if h not in seen_hashes:
+            seen_hashes.add(h)
+            unique_images.append(img)
+
+    # Parallel parsing — each unique image is an independent API call
+    max_workers = min(len(unique_images), int(os.environ.get("VISION_MAX_WORKERS", "4")))
+    results: list[tuple[str, str, str]] = []
+
+    if len(unique_images) == 1:
+        # Single image: no thread overhead
+        results.append(_parse_one_image(unique_images[0]))
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_parse_one_image, img): img for img in unique_images}
+            for future in as_completed(futures):
+                results.append(future.result())
+
+    # Build output in original file order
+    hash_to_result = {h: (p, d) for h, p, d in results}
+    descriptions: list[str] = []
+    newly_done: list[str] = []
+    reported_hashes: set[str] = set()
+    for img in images:
+        h = file_content_hash(img)
+        if h in hash_to_result and h not in reported_hashes:
+            _, desc = hash_to_result[h]
+            descriptions.append(f"[图片 {img}]\n{desc}")
+            newly_done.append(h)
+            reported_hashes.add(h)
 
     append_processed(newly_done)
 
